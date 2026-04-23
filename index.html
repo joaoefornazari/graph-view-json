@@ -372,11 +372,10 @@
       ctx.textBaseline = 'middle';
 
       // Content label below
-      const labelY = p.py + r + 13;
+      const labelY = p.py;
       ctx.fillStyle = dark ? 'rgba(200,200,220,0.85)' : 'rgba(40,40,80,0.82)';
       ctx.font = `${Math.max(9, Math.round(10 * p.scale))}px 'Segoe UI',system-ui,sans-serif`;
-      const short = p.content;
-      ctx.fillText(short, p.px, labelY);
+      ctx.fillText(p.content, p.px, labelY);
     });
 
     requestAnimationFrame(draw);
