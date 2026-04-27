@@ -447,6 +447,9 @@
   });
 
   canvas.addEventListener('mouseup', () => {
+    if (drag.active && !drag.moved && drag.type === 'cam') {
+      clearForm();
+    }
     if (drag.active && !drag.moved && drag.type === 'pan' && selectedId != null) {
       centerOnNode(selectedId);
       const n = nodes.find(x => x.id === selectedId);
