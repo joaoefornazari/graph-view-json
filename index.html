@@ -195,7 +195,7 @@
   function getSize() { const r = wrap.getBoundingClientRect(); return { w: r.width, h: r.height }; }
   function resizeCanvas() { const { w, h } = getSize(); canvas.width = w; canvas.height = h; }
 
-  const IMAGE_URL_RE = /^https?:\/\/.+\.(jpe?g|png|gif|webp|svg|bmp|avif)(\?.*)?$/i;
+  const IMAGE_URL_RE = /^(https?:\/\/.+|(\.{0,2}\/)?[^\s]+)\.(jpe?g|png|gif|webp|svg|bmp|avif)(\?.*)?$/i;
   function isImageUrl(str) { return IMAGE_URL_RE.test((str || '').trim()); }
 
   function loadImage(url) {
