@@ -338,6 +338,10 @@
     });
   }
 
+  // ── Per-node hover animation state (0 = idle, 1 = fully hovered)
+  const hoverT = {}; // id -> 0..1
+  const HOVER_SPEED = 0.09; // lerp step per frame (~60fps → ~170ms in, ~170ms out)
+
   // ── Draw ───────────────────────────────────────────────────
 
   function draw() {
@@ -346,6 +350,14 @@
     ctx.clearRect(0, 0, w, h);
     const dark = isDark();
     applyForces();
+
+    // Advance hoverT for every node
+    nodes.forEach(n => {
+      const target = n.id === hoveredId ? 1 : 0;
+      const cur = hoverT[n.id] ?? 0;
+      hoverT[n.id] = cur + (target - cur) * HOVER_SPEED;
+      if (Math.abs(hoverT[n.id] - target) < 0.001) hoverT[n.id] = target;
+    });
 
     const projected = nodes.map(n => {
       const p = positions[n.id]; if (!p) return null;
@@ -374,26 +386,28 @@
 
     // ── Nodes (back to front)
     projected.sort((a,b) => a.scale-b.scale).forEach(p => {
-      const isHov  = p.id === hoveredId;
-      const isSel  = p.id === selectedId;
-      const isEdit = p.id === editingId;
-      const isLinked = editLinks.includes(p.id);
-      const isImg  = isImageUrl(p.content);
-      const hasContent = p.content.trim().length > 0;
-      const titleOnly  = p.title.trim().length > 0 && !hasContent;
+      const ht = hoverT[p.id] ?? 0;           // 0..1 interpolated
+      // ease-out so it feels snappy in, smooth out
+      const te = ht < 0.5 ? 2*ht*ht : 1 - Math.pow(-2*ht+2,2)/2;
 
-      // Slightly bigger when hovered
+      const isSel    = p.id === selectedId;
+      const isEdit   = p.id === editingId;
+      const isLinked = editLinks.includes(p.id);
+      const isImg    = isImageUrl(p.content);
+      const hasContent  = p.content.trim().length > 0;
+      const titleOnly   = p.title.trim().length > 0 && !hasContent;
+
       const rBase = Math.max(14, 18 * p.scale);
-      const r = isHov ? rBase * 1.12 : rBase;
+      const r = rBase * (1 + 0.12 * te);   // lerped radius
 
       const fill = isLinked ? (dark ? '#1D9E75' : '#0F6E56') : p.color;
 
       ctx.save();
 
-      // ── Glow for title-only hover
-      if (isHov && titleOnly) {
+      // ── Glow for title-only (lerped shadow blur)
+      if (titleOnly && te > 0) {
         ctx.shadowColor = p.color;
-        ctx.shadowBlur = 18;
+        ctx.shadowBlur  = 18 * te;
       }
 
       // ── Base circle
@@ -412,17 +426,20 @@
           if (aspect>1) sh=size/aspect; else sw=size*aspect;
           ctx.globalAlpha = isLinked ? 0.5 : 1;
           ctx.drawImage(img, p.px-sw/2, p.py-sh/2, sw, sh);
+          // Lerped vignette overlay
+          if (te > 0) {
+            ctx.globalAlpha = 0.28 * te;
+            ctx.fillStyle = '#000'; ctx.fill();
+          }
           ctx.globalAlpha = 1;
           ctx.restore();
-          // On hover: overlay a slight vignette + camera icon hint
-          if (isHov) {
+          // 🔍 icon fades in
+          if (te > 0) {
             ctx.save();
-            ctx.beginPath(); ctx.arc(p.px, p.py, r, 0, Math.PI*2); ctx.clip();
-            ctx.fillStyle = 'rgba(0,0,0,0.28)'; ctx.fill();
-            // camera icon (simple unicode drawn in canvas)
+            ctx.globalAlpha = te;
             ctx.fillStyle = 'rgba(255,255,255,0.9)';
             ctx.font = `${Math.max(12, Math.round(14*p.scale))}px sans-serif`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.textAlign='center'; ctx.textBaseline='middle';
             ctx.fillText('🔍', p.px, p.py);
             ctx.restore();
           }
@@ -435,15 +452,15 @@
         }
       }
 
-      // ── For non-image text nodes: on hover show hamburger lines icon
-      if (!isImg && hasContent && isHov) {
-        ctx.fillStyle = 'rgba(255,255,255,0.82)';
-        const lw = r * 0.55, lh = Math.max(1.5, r * 0.08), gap = lh * 2.2;
+      // ── Hamburger icon for text nodes (fades in)
+      if (!isImg && hasContent && te > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.82 * te;
+        ctx.fillStyle = '#fff';
+        const lw = r*0.55, lh = Math.max(1.5, r*0.08), gap = lh*2.2;
         const lx = p.px - lw/2, ly = p.py - gap;
-        for (let i=0; i<3; i++) {
-          roundRect(lx, ly + i*gap, lw, lh, lh/2);
-          ctx.fill();
-        }
+        for (let i=0; i<3; i++) { roundRect(lx, ly+i*gap, lw, lh, lh/2); ctx.fill(); }
+        ctx.restore();
       }
 
       // ── Selection / edit ring
@@ -455,7 +472,7 @@
 
       ctx.restore();
 
-      // ── ID badge (top-right of circle)
+      // ── ID badge
       const badgeR = Math.max(7, 8*p.scale);
       const bx = p.px + r*0.65, by = p.py - r*0.65;
       ctx.beginPath(); ctx.arc(bx, by, badgeR, 0, Math.PI*2);
@@ -465,87 +482,83 @@
       ctx.textAlign='center'; ctx.textBaseline='middle';
       ctx.fillText(p.id, bx, by);
 
-      // ── Label pill below the node
-      // Always show title if present; on hover also show content preview for text nodes
-      const labelFontSize = Math.max(9, Math.round(10*p.scale));
-      ctx.font = `${labelFontSize}px 'Segoe UI',sans-serif`;
+      // ── Pill label below the node
+      const pillPadX=8, pillPadY=5, pillGap=6, pillRadius=5;
+      const maxPillW = Math.max(80, r*4.5);
+      const titleFontSize   = Math.max(9, Math.round(10*p.scale));
+      const previewFontSize = Math.max(8, Math.round(9*p.scale));
+      const titleLH   = titleFontSize + 2;
+      const previewLH = previewFontSize + 2;
 
-      const pillPadX = 8, pillPadY = 5, pillGap = 6, pillRadius = 5;
-      const maxPillW = Math.max(80, r * 4.5);
+      // Measure title lines (always)
+      ctx.font = `600 ${titleFontSize}px 'Segoe UI',sans-serif`;
+      const titleArr = p.title ? wrapText(p.title, maxPillW - pillPadX*2) : [];
 
-      let pillLines = [];
+      // Measure preview lines (always, but we'll lerp their height/opacity)
+      ctx.font = `${previewFontSize}px 'Segoe UI',sans-serif`;
+      const previewRaw = hasContent && !isImg
+        ? (p.content.length > 60 ? p.content.slice(0,58)+'…' : p.content)
+        : '';
+      const previewArr = previewRaw ? wrapText(previewRaw, maxPillW - pillPadX*2) : [];
 
-      if (p.title) {
-        // Wrap title
-        const titleLines = wrapText(p.title, maxPillW - pillPadX*2);
-        pillLines = titleLines;
-      }
-
-      // On hover, append content preview for text (non-image) nodes
-      if (isHov && hasContent && !isImg) {
-        // Show up to first ~60 chars of content as preview lines
-        const preview = p.content.length > 60 ? p.content.slice(0,58)+'…' : p.content;
-        ctx.font = `${Math.max(8, Math.round(9*p.scale))}px 'Segoe UI',sans-serif`;
-        const previewLines = wrapText(preview, maxPillW - pillPadX*2);
-        // We'll draw title in bold and preview in smaller below; store separately
-        pillLines = { title: pillLines, preview: previewLines };
-      }
-
-      // ── Draw pill
-      const isComplex = pillLines && typeof pillLines === 'object' && pillLines.title !== undefined;
-      const titleArr   = isComplex ? pillLines.title   : (Array.isArray(pillLines) ? pillLines : []);
-      const previewArr = isComplex ? pillLines.preview : [];
-
-      if (titleArr.length > 0 || previewArr.length > 0) {
-        const titleFontSize   = labelFontSize;
-        const previewFontSize = Math.max(8, Math.round(9*p.scale));
-        const titleLH   = titleFontSize + 2;
-        const previewLH = previewFontSize + 2;
-
-        const totalH = titleArr.length * titleLH + (previewArr.length > 0 ? 4 + previewArr.length * previewLH : 0);
-
-        // Measure max line width to size pill
+      if (titleArr.length > 0 || (previewArr.length > 0 && !p.title && !isImg)) {
+        // Pill width: always sized to fit title (and preview if fully hovered)
         ctx.font = `600 ${titleFontSize}px 'Segoe UI',sans-serif`;
-        let maxLineW = 0;
-        titleArr.forEach(l => { maxLineW = Math.max(maxLineW, ctx.measureText(l).width); });
+        let maxTitleW = 0;
+        titleArr.forEach(l => { maxTitleW = Math.max(maxTitleW, ctx.measureText(l).width); });
         ctx.font = `${previewFontSize}px 'Segoe UI',sans-serif`;
-        previewArr.forEach(l => { maxLineW = Math.max(maxLineW, ctx.measureText(l).width); });
-        maxLineW = Math.min(maxLineW, maxPillW - pillPadX*2);
+        let maxPreviewW = 0;
+        previewArr.forEach(l => { maxPreviewW = Math.max(maxPreviewW, ctx.measureText(l).width); });
 
-        const pillW = maxLineW + pillPadX*2;
-        const pillH = totalH + pillPadY*2;
+        // Lerp pill width between title-only width and max(title,preview) width
+        const pillWidle = Math.min(maxTitleW, maxPillW - pillPadX*2) + pillPadX*2;
+        const pillWhov  = Math.min(Math.max(maxTitleW, maxPreviewW), maxPillW - pillPadX*2) + pillPadX*2;
+        const pillW = pillWidle + (pillWhov - pillWidle) * te;
+
+        // Lerp pill height: add preview height on hover
+        const titleBlockH = titleArr.length * titleLH;
+        const previewBlockH = previewArr.length > 0 ? 4 + previewArr.length * previewLH : 0;
+        const pillHidle = titleBlockH + pillPadY*2;
+        const pillHhov  = titleBlockH + previewBlockH + pillPadY*2;
+        const pillH = pillHidle + (pillHhov - pillHidle) * te;
+
+        // Always centered over the ball
         const pillX = p.px - pillW/2;
         const pillY = p.py + r + pillGap;
 
-        // Pill background
-        const dark2 = isDark();
+        // Background + border
         roundRect(pillX, pillY, pillW, pillH, pillRadius);
-        ctx.fillStyle = dark2 ? 'rgba(30,30,50,0.82)' : 'rgba(240,240,255,0.88)';
+        ctx.fillStyle = dark ? 'rgba(30,30,50,0.82)' : 'rgba(240,240,255,0.88)';
         ctx.fill();
-        // Pill border tinted with node color
         roundRect(pillX, pillY, pillW, pillH, pillRadius);
         ctx.strokeStyle = hexAlpha(p.color, 0.55);
         ctx.lineWidth = 0.8; ctx.stroke();
 
-        // Title lines
-        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        // Title text
+        ctx.textAlign='center'; ctx.textBaseline='top';
         let curY = pillY + pillPadY;
         ctx.font = `600 ${titleFontSize}px 'Segoe UI',sans-serif`;
-        ctx.fillStyle = dark2 ? 'rgba(220,220,240,0.95)' : 'rgba(20,20,50,0.92)';
+        ctx.fillStyle = dark ? 'rgba(220,220,240,0.95)' : 'rgba(20,20,50,0.92)';
         titleArr.forEach(l => { ctx.fillText(l, p.px, curY); curY += titleLH; });
 
-        // Preview lines (if any)
-        if (previewArr.length > 0) {
+        // Preview text (fades + slides in)
+        if (previewArr.length > 0 && te > 0) {
+          ctx.save();
+          ctx.globalAlpha = te;
+          // clip to pill so text doesn't bleed during animation
+          roundRect(pillX+1, pillY+1, pillW-2, pillH-2, pillRadius-1);
+          ctx.clip();
           curY += 4;
           ctx.font = `${previewFontSize}px 'Segoe UI',sans-serif`;
-          ctx.fillStyle = dark2 ? 'rgba(160,160,190,0.85)' : 'rgba(80,80,120,0.8)';
+          ctx.fillStyle = dark ? 'rgba(160,160,190,0.85)' : 'rgba(80,80,120,0.8)';
           previewArr.forEach(l => { ctx.fillText(l, p.px, curY); curY += previewLH; });
+          ctx.restore();
         }
       } else if (!p.title && !isImg) {
-        // Fallback: no title, show short content text plain (no pill)
+        // No title and no pill — plain short label fallback
         const labelY = p.py + r + 13;
         ctx.fillStyle = dark ? 'rgba(200,200,220,0.85)' : 'rgba(40,40,80,0.82)';
-        ctx.font = `${labelFontSize}px 'Segoe UI',sans-serif`;
+        ctx.font = `${titleFontSize}px 'Segoe UI',sans-serif`;
         ctx.textAlign='center'; ctx.textBaseline='middle';
         const short = p.content.length>18 ? p.content.slice(0,16)+'…' : p.content;
         ctx.fillText(short, p.px, labelY);
